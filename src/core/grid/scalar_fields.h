@@ -20,4 +20,6 @@ typedef struct ScalarFields {
 void init_scalar_fields ();
 void free_scalar_fields ();
 
+f64 none_scalar_function (f64 x1, f64 x2, f64 x3);
+
 #endif

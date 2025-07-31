@@ -18,4 +18,6 @@ typedef struct VectorFields {
 void init_vector_fields ();
 void free_vector_fields ();
 
+Vector3 none_vectorial_function (f64 x, f64 y, f64 z);
+
 #endif // VECTOR_FIELDS_H

@@ -8,7 +8,7 @@ if not exist "build" mkdir build
 set CC=gcc
 set CFLAGS=-Wall -Wextra -g
 set INCLUDES=-I./src
-set OUTPUT=build/smh.exe
+set OUTPUT=build/mhd.exe
 set OPTIMICE = -O3 
 
 :: Recopilar archivos fuente

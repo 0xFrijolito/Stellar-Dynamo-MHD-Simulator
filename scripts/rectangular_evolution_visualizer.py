@@ -38,59 +38,81 @@ def read_simulation(filename):
             "max_coords": (max_x, max_y, max_z),
             "positions": np.frombuffer(positions_data, dtype=np.float64).reshape((cells_per_dim, cells_per_dim, cells_per_dim, 3))
         }
-    
-def visualize_voxels_animation(result, field="temperature", output_gif=None):
-    # Configuración inicial
-    x = result["positions"][..., 0]
-    y = result["positions"][..., 1]
-    z = result["positions"][..., 2]
 
+
+def visualize_voxels_animation(result, field, output_gif=None):
     cells_per_dim = result["cells_per_dim"]
-
-    max_x = result["max_coords"][0]
-    max_y = result["max_coords"][1]
-    max_z = result["max_coords"][2]
+    max_x, max_y, max_z = result["max_coords"]
+    total_steps = result[field].shape[0]
 
     dx = max_x / cells_per_dim
-    dy = max_x / cells_per_dim
-    dz = max_x / cells_per_dim
+    dy = max_y / cells_per_dim
+    dz = max_z / cells_per_dim
 
-    # Construimos la malla estructurada
-    mesh = pv.StructuredGrid(x, y, z)
-    mesh[field] = result[field][0].flatten(order='F')
+    # Crear grid base
+    grid = pv.ImageData()
+    grid.dimensions = (cells_per_dim + 1, cells_per_dim + 1, cells_per_dim + 1)
+    grid.origin = (0.0, 0.0, 0.0)
+    grid.spacing = (dx, dy, dz)
+
+    # Añadir IDs para rastrear celdas
+    grid.cell_data["cell_ids"] = np.arange(grid.n_cells)
 
     # Definir región de recorte (esquina)
-    corner_size = cells_per_dim / 2
+    corner_size = min(cells_per_dim, 64)
     clip_bounds = (
         max_x - dx * corner_size, max_x,
         max_y - dy * corner_size, max_y,
-        max_z - dz * corner_size, max_z
+        max_z / 2, max_z
     )
 
-    # Aplicar recorte conservando los IDs originales
-    clipped = mesh.clip_box(bounds=clip_bounds, invert=True)
+    clipped = grid.clip_box(bounds=clip_bounds, invert=True)
 
-    pltr = pv.Plotter(window_size=[512, 512])
-    pltr.add_mesh(
-        clipped,
-        scalars=field,
-        cmap='inferno',
-        show_scalar_bar=True,
-    )
+    # Verificar que el recorte no esté vacío
+    if clipped.n_cells == 0 or "cell_ids" not in clipped.cell_data:
+        raise RuntimeError("Recorte vacío o sin IDs de celdas.")
 
-    pltr.open_gif(output_gif)
-    for step in range(500):
-        mesh[field] = result[field][step].flatten(order='F')
-        clipped = mesh.clip_box(bounds=clip_bounds, invert=True)
-        pltr.update_scalars(clipped[field], render=False)
-        pltr.write_frame()
+    # Obtener IDs originales de las celdas recortadas
+    clipped_ids = clipped.cell_data["cell_ids"]
 
-    pltr.show()
+    # Asignar datos del primer paso
+    scalar_data = result[field][0].flatten(order="F")
+    clipped.cell_data[field] = scalar_data[clipped_ids]
+
+    # Crear plotter
+    plotter = pv.Plotter()
+    plotter.add_mesh(clipped, scalars=field, cmap="viridis", show_scalar_bar=True)
+
+    if output_gif:
+        plotter.open_gif(output_gif)
+
+    plotter.show(interactive_update=True, auto_close=False)
+
+    # Animación por pasos de tiempo
+    for step in range(1, total_steps):
+        scalar_data = result[field][step].flatten(order="F")
+        clipped.cell_data[field] = scalar_data[clipped_ids]
+
+        plotter.add_text(
+            f"Step: {step}/{total_steps - 1}",
+            position="lower_edge",
+            name="step_text",
+            font_size=10,
+        )
+
+        if output_gif:
+            plotter.write_frame()
+        else:
+            plotter.update()
+            time.sleep(0.05)
+
+    plotter.close()
+
 
 # Ejecutar simulación
 result = read_simulation("output.bin")
 visualize_voxels_animation(
     result, 
-    field="temperature",
-    output_gif="ctm.gif"  # Opcional: guardar como GIF
+    field="density",
+    output_gif="simulation_animation.gif"  # Opcional: guardar como GIF
 )

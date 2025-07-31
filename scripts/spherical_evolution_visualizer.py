@@ -50,9 +50,18 @@ def visualize_sphere_animation(result, field="temperature", output_gif=None):
     y = radius * np.sin(theta) * np.sin(phi)
     z = radius * np.cos(theta)
 
-    # Construimos la malla estructurada
-    mesh = pv.StructuredGrid(x, y, z)
-    mesh.plot()
+    print(np.max(radius))
+
+    # Aplanar y combinar en puntos 3D
+    points = np.column_stack((x.ravel(), y.ravel(), z.ravel()))
+
+    # Crear nube de puntos en PyVista
+    point_cloud = pv.PolyData(points)
+
+    # Visualización
+    plotter = pv.Plotter()
+    plotter.add_mesh(point_cloud, color="cyan", point_size=3, render_points_as_spheres=True)
+    plotter.show()
 
     
 # Ejecutar simulación
