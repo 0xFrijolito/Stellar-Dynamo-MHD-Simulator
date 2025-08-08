@@ -1,169 +1,180 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <math.h>
 
-#include "core/grid/grid.h"
-#include "core/solver/diferencial_scalar_operators.h"
-#include "core/solver/diferencial_vector_operators.h"
+#include "core/physics/fluids/euler/euler.h"
+#include "core/physics/inicial_conditions.h"
 
-#ifndef PI
-    #define PI 3.14159265358979323846
+#ifndef M_PI
+    #define M_PI 3.1415
 #endif
 
-f64 density_function (f64 x, f64 y, f64 z) {
-    return exp(-(x-10)*(x-10)/25.0) * exp(-(y-10)*(y-10)/25.0);
+// ---------- Parámetros del caso (ajusta a gusto) ----------
+static const f64 Lx = 10.0;
+static const f64 Ly = 10.0;
+static const f64 Lz = 10.0;
+
+static const f64 rho1 = 1.0;   // banda inferior
+static const f64 rho2 = 2.0;   // banda superior
+static const f64 u1   =  0.5;  // velocidad en y < Ly/2
+static const f64 u2   = -0.5;  // velocidad en y > Ly/2
+static const f64 p0   = 2.5;   // presión uniforme inicial
+static const f64 eps  = 1e-2;  // amplitud de perturbación en v
+static const f64 delta= 0.1;   // grosor relativo de la interfase (tanh smoothing) en unidades de Ly (0.1 => suave)
+
+// ---------- IC helpers ----------
+static inline f64 smooth_step(f64 y){
+    // Transición suave cerca de Ly/2 con espesor ~ delta*Ly
+    const f64 s = (y - 0.5*Ly) / (delta*Ly);
+    // map: tanh(s) in [-1,1] -> [0,1]
+    return 0.5 * (1.0 + tanh(s));
 }
 
-Vector3 velocity_function(f64 x, f64 y, f64 z) {
-    f64 A1 =  2.0, x1 = 5.0,  y1 = 5.0,  sigma1 = 2.0;
-    f64 A2 = -2.0, x2 = 15.0, y2 = 5.0,  sigma2 = 2.0;
-    f64 A3 =  2.0, x3 = 10.0, y3 = 15.0, sigma3 = 2.0;
-
-    // Vórtice 1
-    f64 dx1 = x - x1, dy1 = y - y1;
-    f64 r2_1 = dx1*dx1 + dy1*dy1;
-    f64 f1 = A1 * exp(-r2_1 / (sigma1 * sigma1));
-    f64 vx1 = -dy1 * f1;
-    f64 vy1 =  dx1 * f1;
-
-    // Vórtice 2
-    f64 dx2 = x - x2, dy2 = y - y2;
-    f64 r2_2 = dx2*dx2 + dy2*dy2;
-    f64 f2 = A2 * exp(-r2_2 / (sigma2 * sigma2));
-    f64 vx2 = -dy2 * f2;
-    f64 vy2 =  dx2 * f2;
-
-    // Vórtice 3
-    f64 dx3 = x - x3, dy3 = y - y3;
-    f64 r2_3 = dx3*dx3 + dy3*dy3;
-    f64 f3 = A3 * exp(-r2_3 / (sigma3 * sigma3));
-    f64 vx3 = -dy3 * f3;
-    f64 vy3 =  dx3 * f3;
-
-    Vector3 v;
-    v.x1 = vx1 + vx2 + vx3;
-    v.x2 = vy1 + vy2 + vy3;
-    v.x3 = 0.0;
-
-    return v;
+static inline f64 rho_y(f64 y){
+    // mezcla entre rho1 (abajo) y rho2 (arriba)
+    f64 s = smooth_step(y);
+    return (1.0 - s)*rho1 + s*rho2;
 }
 
-void continuity_equation_solver_step (Grid *grid, f64 dt) {
-    f64 dx1 = grid->dx1;
-    f64 dx2 = grid->dx2;
-    f64 dx3 = grid->dx3;
+static inline f64 u_y(f64 y){
+    // mezcla entre u1 (abajo) y u2 (arriba)
+    f64 s = smooth_step(y);
+    return (1.0 - s)*u1 + s*u2;
+}
 
-    u64 gradient_domain = (grid->cells_per_dimension)
-                        * (grid->cells_per_dimension)
-                        * (grid->cells_per_dimension);
+static inline f64 v_perturb(f64 x, f64 z){
+    // perturbación pequeña para disparar K-H (periodic)
+    // puedes hacerla 2D (solo x) o 3D (x y z). Aquí 2D en x.
+    return eps * sin(2.0*M_PI * x / Lx);
+}
 
-    Vector3 *field = (Vector3*)malloc(sizeof(Vector3) * gradient_domain);
+// ---------- IC requeridas por tu API ----------
+f64 inicial_density (f64 x, f64 y, f64 z) {
+    (void)z;
+    return rho_y(y);
+}
 
-    // Obtenemos los parametros a usar
-    Vector3 *velocity = grid->vector_fields.velocity;
-    f64 *density      = grid->scalar_fields.density;
+f64 inicial_energy  (f64 x, f64 y, f64 z) {
+    // E = p/(γ-1) + 1/2 ρ |u|^2
+    // Usa el MISMO gamma que pases al solver (abajo uso 1.4)
+    const f64 rho = inicial_density(x,y,z);
+    const f64 u = u_y(y);
+    const f64 v = v_perturb(x,z);
+    const f64 w = 0.0;
+    const f64 gamma = 1.4;
+    const f64 ke = 0.5 * rho * (u*u + v*v + w*w);
+    return p0/(gamma - 1.0) + ke;
+}
 
-    // Encontramos el campo vectorial a actualizar
-    for (u32 k = 0; k < grid->cells_per_dimension; ++k) {
-        for (u32 j = 0; j < grid->cells_per_dimension; ++j) {
-            for (u32 i = 0; i < grid->cells_per_dimension; ++i) {
-                // Calculamos el indice
-                u32 idx = i * grid->cells_per_dimension * grid->cells_per_dimension
-                        + j * grid->cells_per_dimension + k;
-                
-                vector3_scalar_mul(velocity[idx], density[idx], &field[idx]);
+f64 inicial_momentum_x (f64 x, f64 y, f64 z) {
+    const f64 rho = inicial_density(x,y,z);
+    return rho * u_y(y);
+}
+
+f64 inicial_momentum_y (f64 x, f64 y, f64 z) {
+    const f64 rho = inicial_density(x,y,z);
+    return rho * v_perturb(x,z);
+}
+
+f64 inicial_momentum_z (f64 x, f64 y, f64 z) {
+    (void)x; (void)y; (void)z;
+    return 0.0;
+}
+
+// ---------- Writer VTK legacy 3D (STRUCTURED_POINTS) ----------
+// Escribe un campo escalar 3D (aquí densidad)
+static int write_vtk_density(const char* filename,
+                             const EulerSolver* solver)
+{
+    const u32 N = solver->mesh.cells_per_dimension;
+    const f64 dx = solver->mesh.dx1;
+    const f64 dy = solver->mesh.dx2;
+    const f64 dz = solver->mesh.dx3;
+    const f64* rho = solver->fields.density;
+
+    FILE* f = fopen(filename, "w");
+    if (!f) return -1;
+
+    fprintf(f, "# vtk DataFile Version 3.0\n");
+    fprintf(f, "Euler density step %u\n", (unsigned)solver->step);
+    fprintf(f, "ASCII\n");
+    fprintf(f, "DATASET STRUCTURED_POINTS\n");
+    fprintf(f, "DIMENSIONS %u %u %u\n", (unsigned)N, (unsigned)N, (unsigned)N);
+    fprintf(f, "ORIGIN 0 0 0\n");
+    fprintf(f, "SPACING %.17g %.17g %.17g\n", dx, dy, dz);
+    fprintf(f, "POINT_DATA %u\n", (unsigned)(N*N*N));
+    fprintf(f, "SCALARS density double 1\n");
+    fprintf(f, "LOOKUP_TABLE default\n");
+
+    // VTK STRUCTURED_POINTS espera orden k variando más lento o más rápido?
+    // Con tu index: idx = i*N*N + j*N + k  (k es el más contiguo)
+    // Para ser consistente, emitimos en el MISMO orden (i,j,k).
+    for (u32 i=0;i<N;++i){
+        for (u32 j=0;j<N;++j){
+            for (u32 k=0;k<N;++k){
+                const u64 idx = (u64)i*N*N + (u64)j*N + (u64)k;
+                fprintf(f, "%.17g\n", rho[idx]);
             }
         }
     }
-    
-    f64 *divergence = (f64*)malloc(sizeof(f64) * gradient_domain);
 
-    vector_divergence(field, divergence, grid->cells_per_dimension, dx1, dx2, dx3);
+    fclose(f);
+    return 0;
+}
 
-    for (u32 k = 1; k < grid->cells_per_dimension-1; ++k) {
-        for (u32 j = 1; j < grid->cells_per_dimension-1; ++j) {
-            for (u32 i = 1; i < grid->cells_per_dimension-1; ++i) {
-                // Calculamos el indice
-                u32 idx = i * grid->cells_per_dimension * grid->cells_per_dimension
-                        + j * grid->cells_per_dimension + k;
-                
-                density[idx] -=  divergence[idx] * dt;
+int main () {
+    // Resolución y dominio
+    const u32 N = 32;       // súbelo a 128 si tu PC aguanta
+    const f64 max_x = Lx;
+    const f64 max_y = Ly;
+    const f64 max_z = Lz;
+
+    // IMPORTANTE: γ != 1.0
+    const f64 gamma = 1.4;
+
+    // Paso de tiempo (simple). Luego podemos hacer CFL adaptativo.
+    const f64 dt = 5e-3;
+
+    EulerInicialConditions inicial_conditions;
+    inicial_conditions.inicial_density    = inicial_density;
+    inicial_conditions.inicial_momentum_x = inicial_momentum_x;
+    inicial_conditions.inicial_momentum_y = inicial_momentum_y;
+    inicial_conditions.inicial_momentum_z = inicial_momentum_z;
+    inicial_conditions.inicial_energy     = inicial_energy;
+
+    EulerSolver solver;
+    init_euler_solver(&solver, dt, N, max_x, max_y, max_z, gamma, inicial_conditions);
+
+    // Simulación: escribe cada 'every' pasos
+    const u32 steps = 600;     // duración de la simulación
+    const u32 every = 2;       // frecuencia de escritura
+
+    // Frame inicial
+    {
+        char path[256];
+        snprintf(path, sizeof(path), "outputs/density_%05u.vtk", (unsigned)solver.step);
+        if (write_vtk_density(path, &solver) != 0) {
+            fprintf(stderr, "Error escribiendo %s\n", path);
+        } else {
+            printf("Escrito %s\n", path);
+        }
+    }
+
+    for (u32 s=0; s<steps; ++s) {
+        euler_step_solver(&solver);
+
+        if (solver.step % every == 0) {
+            char path[256];
+            snprintf(path, sizeof(path), "outputs/density_%05u.vtk", (unsigned)solver.step);
+            if (write_vtk_density(path, &solver) != 0) {
+                fprintf(stderr, "Error escribiendo %s\n", path);
+            } else {
+                printf("Escrito %s\n", path);
             }
         }
     }
 
-    free(divergence);
-    free(field);
-}
-
-int main() {    
-    // Configuracion inicial de los parametros fisicos.
-    ScalarFieldsInitProfiles scalar_init_profiles;
-    scalar_init_profiles.temperature_function = none_scalar_function;
-    scalar_init_profiles.density_function     = density_function;
-    scalar_init_profiles.pressure_function    = none_scalar_function;
-
-    VectorFieldsInitProfiles vector_init_profiles;
-    vector_init_profiles.velocity_function     = velocity_function;
-    vector_init_profiles.acceleration_function = none_vectorial_function;
-
-    // Tipo de geometrica usamos
-    GEOMETRIC_TYPE geometric = RECTANGULAR;
-
-    // Tamano y resolucion de la simulacion
-    f64 max_x = 20;
-    f64 max_y = 20;
-    f64 max_z = 20;
-
-    u32 cells_per_dimension = 32;
-
-    // Grid
-    Grid grid;
-    init_grid(
-        &grid, geometric, 
-        cells_per_dimension, 
-        scalar_init_profiles,
-        vector_init_profiles,
-        max_x, 
-        max_y, 
-        max_z
-    );
-
-    FILE* fp = fopen("output.bin", "wb");
-    if (!fp) return false;
-
-    printf("[+] Archivo creado. \n");
-    
-    // Guardar metadata
-    fwrite(&grid.cells_per_dimension, sizeof(u32), 1, fp);
-    fwrite(&grid.max_x1, sizeof(f64), 1, fp);
-    fwrite(&grid.max_x2, sizeof(f64), 1, fp);
-    fwrite(&grid.max_x3, sizeof(f64), 1, fp);
-
-    printf("[+] Metadatos guardados en el archivo.\n");
-
-    u64 total_cells = grid.cells_per_dimension
-                    * grid.cells_per_dimension
-                    * grid.cells_per_dimension;
-
-    fwrite(grid.positions, sizeof(Vector3), total_cells, fp);
-
-    printf("[+] Posiciones guardas en el archivo. \n");
-
-    f64 dt    = 1e-1;
-    u32 steps = 500;
-
-    printf("[+] Iniciando la simulacion.\n");
-    for (u32 step = 0; step < steps; step++) {
-
-        continuity_equation_solver_step(&grid, dt);
-                
-        fwrite(grid.scalar_fields.temperature, sizeof(f64), total_cells, fp);
-        fwrite(grid.scalar_fields.pressure,    sizeof(f64), total_cells, fp);
-        fwrite(grid.scalar_fields.density,     sizeof(f64), total_cells, fp);
-    }
-    printf("[+] Fin de la simulacion.\n");
-
-    fclose(fp);
-
+    free_euler_solver(&solver);
     return 0;
 }

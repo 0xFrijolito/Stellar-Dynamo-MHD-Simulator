@@ -59,11 +59,11 @@ def visualize_voxels_animation(result, field, output_gif=None):
     grid.cell_data["cell_ids"] = np.arange(grid.n_cells)
 
     # Definir región de recorte (esquina)
-    corner_size = min(cells_per_dim, 64)
+    corner_size = min(cells_per_dim, 16)
     clip_bounds = (
         max_x - dx * corner_size, max_x,
         max_y - dy * corner_size, max_y,
-        max_z / 2, max_z
+        max_z / 2,                max_z
     )
 
     clipped = grid.clip_box(bounds=clip_bounds, invert=True)
@@ -113,6 +113,6 @@ def visualize_voxels_animation(result, field, output_gif=None):
 result = read_simulation("output.bin")
 visualize_voxels_animation(
     result, 
-    field="density",
+    field="pressure",
     output_gif="simulation_animation.gif"  # Opcional: guardar como GIF
 )

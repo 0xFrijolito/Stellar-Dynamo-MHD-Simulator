@@ -73,7 +73,7 @@ cd stellar-dynamo-mhd
 ./build.bat
 
 # Ejecutar ejemplo de difusión térmica
-./bin/mhd_solver
+./build/mhd_solver
 
 # Reproducir resultados en Python
 python3 viz_simulation.py output.bin

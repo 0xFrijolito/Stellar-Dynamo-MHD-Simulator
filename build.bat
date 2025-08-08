@@ -6,7 +6,7 @@ if not exist "build" mkdir build
 
 :: Compilador y flags
 set CC=gcc
-set CFLAGS=-Wall -Wextra -g
+set CFLAGS=-Wextra -g
 set INCLUDES=-I./src
 set OUTPUT=build/mhd.exe
 set OPTIMICE = -O3 
